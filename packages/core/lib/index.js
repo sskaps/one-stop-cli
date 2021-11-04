@@ -1,0 +1,170 @@
+'use strict';
+
+module.exports = core;
+
+const path = require('path');
+const semver = require('semver');
+const colors = require('colors/safe');
+const userHome = require('user-home');
+const pathExists = require('path-exists').sync;
+const commander = require('commander')
+const {log, exec, npm} = require('@one-stop-cli/utils');
+const init = require('@one-stop-cli/init');
+const pkg = require('../package.json');
+const constant = require('./const');
+
+
+const program = new commander.Command();
+
+async function core() {
+  try {
+    await prepare();
+    registryCommand();
+  } catch (e) {
+    log.error(e.message);
+    log.verbose(e);
+  }
+}
+
+async function prepare() {
+  checkPkgVersion();
+  checkNodeVersion();
+  checkRoot();
+  checkUserHome();
+  checkEnv();
+  await checkGlobalUpdate();
+}
+
+/**
+ * 检查版本号
+ * */
+function checkPkgVersion() {
+  log.info('cli', pkg.version);
+}
+
+/**
+ * 检查node版本
+ * */
+function checkNodeVersion() {
+  log.info('node', process.version.replace('v', ''));
+  const currentVersion = process.version;
+  const lowestVersion = constant.LOWEST_NODE_VERSION;
+  if (!semver.gte(currentVersion, lowestVersion)) {
+    throw new Error(colors.red(`one-stop-cli 需要安装 v${lowestVersion} 以上的版本的 Node.js`));
+  }
+}
+
+/**
+ * 检查root启动
+ * */
+function checkRoot() {
+  const rootCheck = require('root-check');
+  rootCheck();
+}
+
+/**
+ * 检查用户主目录
+ * */
+function checkUserHome() {
+  if (!userHome || !pathExists(userHome)) {
+    throw new Error(colors.red('当前登录用户注目礼不存在'));
+  }
+}
+
+/**
+ * 检查环境变量
+ * */
+function checkEnv() {
+  const dotEnv = require('dotenv');
+  const dotEnvPath = path.resolve(userHome, '.env');
+  if (pathExists(dotEnvPath)) {
+    dotEnv.config({
+      path: dotEnvPath
+    });
+  }
+  createDefaultConfig();
+
+  // log.verbose('环境变量', process.env.CLI_HOME_PATH);
+}
+
+function createDefaultConfig() {
+  const cliConfig = {
+    home: userHome
+  };
+  if (process.env.CLI_HOME) {
+    cliConfig['cliHome'] = path.join(userHome, process.env.CLI_HOME);
+  } else {
+    cliConfig['cliHome'] = path.join(userHome, constant.DEFAULT_CLI_HOME);
+  }
+  process.env.CLI_HOME_PATH = cliConfig.cliHome;
+}
+
+/**
+ * 检查是否为最新版本
+ * 提示更新
+ * */
+async function checkGlobalUpdate() {
+  // 获取当前版本号和模块名
+  const { version, name } = pkg;
+  // 调用npm API，获取所以版本号
+  // 提取所有版本号，比对哪些版本号大于当前版本号
+  // 获取最新的版本号，提示用户更新到最新版本
+  const lastVersion = await npm.getNpmSemverVersion(version, name);
+  if (lastVersion && semver.gt(lastVersion, version)) {
+    log.warn('更新提示', colors.yellow(
+      `请手动更新 ${name}，当前版本: ${version}，最新版本: ${lastVersion}，更新命令: npm install -g ${name}`
+    ))
+  }
+}
+
+/**
+* 注册命令
+* */
+function registryCommand() {
+
+  program
+    .name(Object.keys(pkg.bin)[0])
+    .usage('<command> [options]')
+    .version(pkg.version)
+    .option('-d, --debug', '是否开启调试模式', false)
+    .option('-tp --targetPath <targetPath>', '是否指定本地调试文件路径', '');
+
+  // 注册命令
+  program
+    .command('init [projectName]')
+    .option('-f --force', '是否强制初始化项目')
+    .action(exec);
+    // .action(init);
+
+  // 监听debug模式
+  program.on('option:targetPath', () => {
+    // console.log(program.targetPath)
+    process.env.CLI_TARGET_PATH = program.targetPath;
+  });
+
+  // 监听debug模式
+  program.on('option:debug', () => {
+    if (program.debug) {
+      process.env.LOG_LEVEL = 'verbose';
+    } else {
+      process.env.LOG_LEVEL = 'info';
+    }
+    log.level = process.env.LOG_LEVEL;
+  });
+
+  // 监听未知命令
+  program.on('command:*', (obj) => {
+    const availableCommands = program.commands.map(cmd => cmd.name());
+    log.error(colors.red(`未知的命令: ${obj[0]}`));
+    availableCommands.length && log.info(`可用命令：${availableCommands.toString()}`);
+  });
+
+  // 未输入命令，打印帮助文档
+  if (program.args && program.args.length < 1) {
+    program.outputHelp();
+  }
+
+  // 参数解析
+  program.parse(process.argv);
+
+}
