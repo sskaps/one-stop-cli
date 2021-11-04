@@ -1,6 +1,7 @@
 const axios = require('axios');
 
-const BASE_URL = 'http://book.youbaobao.xyz:7002';
+// const BASE_URL = 'http://book.youbaobao.xyz:7002';
+const BASE_URL = process.env.CLI_BASE_URL ? process.env.CLI_BASE_URL : 'http://localhost:7001';
 
 const service = axios.create({
   baseURL: BASE_URL,

@@ -34,7 +34,7 @@ class Package {
     }
     log.verbose(this.targetPath);
     log.verbose(this.storePath);
-    const latestVersion = await npm.getNpmLatestSemverVersion(this.packageName, this.packageVersion);
+    const latestVersion = await npm.getNpmLatestVersion(this.packageName);
     log.verbose('latestVersion', this.packageName, latestVersion);
     if (latestVersion) {
       this.packageVersion = latestVersion;
@@ -46,7 +46,7 @@ class Package {
     return npminstall({
       root: this.targetPath,
       storeDir: this.storePath,
-      registry: npm.getNpmRegistry(useOriginNpm),
+      registry: npm.getDefaultRegistry(useOriginNpm),
       pkgs: [{
         name: this.packageName,
         version: this.packageVersion,
@@ -85,7 +85,7 @@ class Package {
   async getLatestVersion() {
     const version = await this.getVersion();
     if (version) {
-      const latestVersion = await npm.getNpmLatestSemverVersion(this.packageName, version);
+      const latestVersion = await npm.getNpmLatestVersion(this.packageName);
       return latestVersion;
     }
     return null;
@@ -96,7 +96,7 @@ class Package {
     return npminstall({
       root: this.targetPath,
       storeDir: this.storePath,
-      registry: npm.getNpmRegistry(useOriginNpm),
+      registry: npm.getDefaultRegistry(useOriginNpm),
       pkgs: [{
         name: this.packageName,
         version: latestVersion,

@@ -1,169 +1,278 @@
-'use strict';
-
-module.exports = core;
-
+const fs = require('fs');
 const path = require('path');
-const semver = require('semver');
+const fse = require('fs-extra');
+const program = require('commander');
 const colors = require('colors/safe');
 const userHome = require('user-home');
-const pathExists = require('path-exists').sync;
-const commander = require('commander')
-const {log, exec, npm} = require('@one-stop-cli/utils');
-const init = require('@one-stop-cli/init');
-const pkg = require('../package.json');
-const constant = require('./const');
+const semver = require('semver');
+const { log, npm, Package, exec, locale } = require('@one-stop-cli/utils');
+const packageConfig = require('../package');
 
+const {
+  LOWEST_NODE_VERSION,
+  DEFAULT_CLI_HOME,
+  NPM_NAME,
+  DEPENDENCIES_PATH,
+} = require('../lib/const');
 
-const program = new commander.Command();
+module.exports = cli;
 
-async function core() {
+let args;
+let config;
+
+async function cli() {
   try {
     await prepare();
-    registryCommand();
+    registerCommand();
   } catch (e) {
     log.error(e.message);
-    log.verbose(e);
+  }
+}
+
+function registerCommand() {
+  program.version(packageConfig.version).usage('<command> [options]');
+
+  program
+    .command('init [type]')
+    .description('项目初始化')
+    .option('--packagePath <packagePath>', '手动指定init包路径')
+    .option('--force', '覆盖当前路径文件（谨慎使用）')
+    .action(async (type, { packagePath, force }) => {
+      const packageName = '@one-stop-cli/init';
+      const packageVersion = '0.0.1';
+      await execCommand({ packagePath, packageName, packageVersion }, { type, force });
+    });
+
+  program
+    .command('publish')
+    .description('项目发布')
+    .option('--packagePath <packagePath>', '手动指定publish包路径')
+    .option('--refreshToken', '强制更新git token信息')
+    .option('--refreshOwner', '强制更新git owner信息')
+    .option('--refreshServer', '强制更新git server信息')
+    .option('--force', '强制更新所有缓存信息')
+    .option('--prod', '正式发布')
+    .option('--keepCache', '保留缓存')
+    .option('--cnpm', '使用cnpm')
+    .option('--buildCmd <buildCmd>', '手动指定build命令')
+    .option('--sshUser <sshUser>', '模板服务端用户名')
+    .option('--sshIp <sshIp>', '模板服务器IP或域名')
+    .option('--sshPath <sshPath>', '模板服务器上传路径')
+    .action(async ({
+                     packagePath,
+                     refreshToken,
+                     refreshOwner,
+                     refreshServer,
+                     force,
+                     prod,
+                     sshUser,
+                     sshIp,
+                     sshPath,
+                     keepCache,
+                     cnpm,
+                     buildCmd,
+                   }) => {
+      const packageName = '@one-stop-cli/publish';
+      const packageVersion = '0.0.1';
+      if (force) {
+        refreshToken = true;
+        refreshOwner = true;
+        refreshServer = true;
+      }
+      await execCommand({ packagePath, packageName, packageVersion }, {
+        refreshToken,
+        refreshOwner,
+        refreshServer,
+        prod,
+        sshUser,
+        sshIp,
+        sshPath,
+        keepCache,
+        cnpm,
+        buildCmd,
+      });
+    });
+
+  program
+    .command('clean')
+    .description('清空缓存文件')
+    .option('-a, --all', '清空全部')
+    .option('-d, --dep', '清空依赖文件')
+    .action((options) => {
+      log.notice('开始清空缓存文件');
+      if (options.all) {
+        cleanAll();
+      } else if (options.dep) {
+        const depPath = path.resolve(config.cliHome, DEPENDENCIES_PATH);
+        if (fs.existsSync(depPath)) {
+          fse.emptyDirSync(depPath);
+          log.success('清空依赖文件成功', depPath);
+        } else {
+          log.success('文件夹不存在', depPath);
+        }
+      } else {
+        cleanAll();
+      }
+    });
+
+  program
+    .option('--debug', '打开调试模式')
+    .parse(process.argv);
+
+  if (args._.length < 1) {
+    program.outputHelp();
+    console.log();
+  }
+}
+
+async function execCommand({ packagePath, packageName, packageVersion }, extraOptions) {
+  let rootFile;
+  try {
+    if (packagePath) {
+      const execPackage = new Package({
+        targetPath: packagePath,
+        storePath: packagePath,
+        name: packageName,
+        version: packageVersion,
+      });
+      rootFile = execPackage.getRootFilePath(true);
+    } else {
+      const { cliHome } = config;
+      const packageDir = `${DEPENDENCIES_PATH}`;
+      const targetPath = path.resolve(cliHome, packageDir);
+      const storePath = path.resolve(targetPath, 'node_modules');
+      const initPackage = new Package({
+        targetPath,
+        storePath,
+        name: packageName,
+        version: packageVersion,
+      });
+      if (await initPackage.exists()) {
+        await initPackage.update();
+      } else {
+        await initPackage.install();
+      }
+      rootFile = initPackage.getRootFilePath();
+    }
+    const _config = Object.assign({}, config, extraOptions, {
+      debug: args.debug,
+    });
+    if (fs.existsSync(rootFile)) {
+      const code = `require('${rootFile}')(${JSON.stringify(_config)})`;
+      const p = exec('node', ['-e', code], { 'stdio': 'inherit' });
+      p.on('error', e => {
+        log.verbose('命令执行失败:', e);
+        handleError(e);
+        process.exit(1);
+      });
+      p.on('exit', c => {
+        log.verbose('命令执行成功:', c);
+        process.exit(c);
+      });
+    } else {
+      throw new Error('入口文件不存在，请重试！');
+    }
+  } catch (e) {
+    log.error(e.message);
+  }
+}
+
+function handleError(e) {
+  if (args.debug) {
+    log.error('Error:', e.stack);
+  } else {
+    log.error('Error:', e.message);
+  }
+  process.exit(1);
+}
+
+function cleanAll() {
+  if (fs.existsSync(config.cliHome)) {
+    fse.emptyDirSync(config.cliHome);
+    log.success('清空全部缓存文件成功', config.cliHome);
+  } else {
+    log.success('文件夹不存在', config.cliHome);
   }
 }
 
 async function prepare() {
-  checkPkgVersion();
-  checkNodeVersion();
-  checkRoot();
-  checkUserHome();
-  checkEnv();
-  await checkGlobalUpdate();
+  checkPkgVersion(); // 检查当前运行版本
+  checkNodeVersion(); // 检查 node 版本
+  checkRoot(); // 检查是否为 root 启动
+  checkUserHome(); // 检查用户主目录
+  checkInputArgs(); // 检查用户输入参数
+  checkEnv(); // 检查环境变量
+  await checkGlobalUpdate(); // 检查工具是否需要更新
 }
 
-/**
- * 检查版本号
- * */
-function checkPkgVersion() {
-  log.info('cli', pkg.version);
-}
-
-/**
- * 检查node版本
- * */
-function checkNodeVersion() {
-  log.info('node', process.version.replace('v', ''));
-  const currentVersion = process.version;
-  const lowestVersion = constant.LOWEST_NODE_VERSION;
-  if (!semver.gte(currentVersion, lowestVersion)) {
-    throw new Error(colors.red(`one-stop-cli 需要安装 v${lowestVersion} 以上的版本的 Node.js`));
+async function checkGlobalUpdate() {
+  log.verbose('检查 one-stop-cli 最新版本');
+  const currentVersion = packageConfig.version;
+  const lastVersion = await npm.getNpmLatestVersion(NPM_NAME, currentVersion);
+  if (lastVersion && semver.gt(lastVersion, currentVersion)) {
+    log.warn(colors.yellow(`请手动更新 ${NPM_NAME}，当前版本：${packageConfig.version}，最新版本：${lastVersion}
+                更新命令： npm install -g ${NPM_NAME}`));
   }
 }
 
-/**
- * 检查root启动
- * */
-function checkRoot() {
-  const rootCheck = require('root-check');
-  rootCheck();
-}
-
-/**
- * 检查用户主目录
- * */
-function checkUserHome() {
-  if (!userHome || !pathExists(userHome)) {
-    throw new Error(colors.red('当前登录用户注目礼不存在'));
-  }
-}
-
-/**
- * 检查环境变量
- * */
 function checkEnv() {
-  const dotEnv = require('dotenv');
-  const dotEnvPath = path.resolve(userHome, '.env');
-  if (pathExists(dotEnvPath)) {
-    dotEnv.config({
-      path: dotEnvPath
-    });
-  }
-  createDefaultConfig();
-
-  // log.verbose('环境变量', process.env.CLI_HOME_PATH);
+  log.verbose('开始检查环境变量');
+  const dotenv = require('dotenv');
+  dotenv.config({
+    path: path.resolve(userHome, '.env'),
+  });
+  config = createCliConfig(); // 准备基础配置
+  log.verbose('环境变量', config);
 }
 
-function createDefaultConfig() {
+function createCliConfig() {
   const cliConfig = {
-    home: userHome
+    home: userHome,
   };
   if (process.env.CLI_HOME) {
     cliConfig['cliHome'] = path.join(userHome, process.env.CLI_HOME);
   } else {
-    cliConfig['cliHome'] = path.join(userHome, constant.DEFAULT_CLI_HOME);
+    cliConfig['cliHome'] = path.join(userHome, DEFAULT_CLI_HOME);
   }
-  process.env.CLI_HOME_PATH = cliConfig.cliHome;
+  return cliConfig;
 }
 
-/**
- * 检查是否为最新版本
- * 提示更新
- * */
-async function checkGlobalUpdate() {
-  // 获取当前版本号和模块名
-  const { version, name } = pkg;
-  // 调用npm API，获取所以版本号
-  // 提取所有版本号，比对哪些版本号大于当前版本号
-  // 获取最新的版本号，提示用户更新到最新版本
-  const lastVersion = await npm.getNpmSemverVersion(version, name);
-  if (lastVersion && semver.gt(lastVersion, version)) {
-    log.warn('更新提示', colors.yellow(
-      `请手动更新 ${name}，当前版本: ${version}，最新版本: ${lastVersion}，更新命令: npm install -g ${name}`
-    ))
+function checkInputArgs() {
+  log.verbose('开始校验输入参数');
+  const minimist = require('minimist');
+  args = minimist(process.argv.slice(2)); // 解析查询参数
+  checkArgs(args); // 校验参数
+  log.verbose('输入参数', args);
+}
+
+function checkArgs(args) {
+  if (args.debug) {
+    process.env.LOG_LEVEL = 'verbose';
+  } else {
+    process.env.LOG_LEVEL = 'info';
+  }
+  log.level = process.env.LOG_LEVEL;
+}
+
+function checkUserHome() {
+  if (!userHome || !fs.existsSync(userHome)) {
+    throw new Error(colors.red('当前登录用户主目录不存在！'));
   }
 }
 
-/**
-* 注册命令
-* */
-function registryCommand() {
-  program
-    .name(Object.keys(pkg.bin)[0])
-    .usage('<command> [options]')
-    .version(pkg.version)
-    .option('-d, --debug', '是否开启调试模式', false)
-    .option('-tp --targetPath <targetPath>', '是否指定本地调试文件路径', '');
+function checkRoot() {
+  const rootCheck = require('root-check');
+  rootCheck(colors.red('请避免使用 root 账户启动本应用'));
+}
 
-  // 注册命令
-  program
-    .command('init [projectName]')
-    .option('-f --force', '是否强制初始化项目')
-    .action(exec);
-    // .action(init);
-
-  // 监听debug模式
-  program.on('option:targetPath', () => {
-    // console.log(program.targetPath)
-    process.env.CLI_TARGET_PATH = program.targetPath;
-  });
-
-  // 监听debug模式
-  program.on('option:debug', () => {
-    if (program.debug) {
-      process.env.LOG_LEVEL = 'verbose';
-    } else {
-      process.env.LOG_LEVEL = 'info';
-    }
-    log.level = process.env.LOG_LEVEL;
-  });
-
-  // 监听未知命令
-  program.on('command:*', (obj) => {
-    const availableCommands = program.commands.map(cmd => cmd.name());
-    log.error(colors.red(`未知的命令: ${obj[0]}`));
-    availableCommands.length && log.info(`可用命令：${availableCommands.toString()}`);
-  });
-
-  // 未输入命令，打印帮助文档
-  if (program.args && program.args.length < 1) {
-    program.outputHelp();
+function checkNodeVersion() {
+  const semver = require('semver');
+  if (!semver.gte(process.version, LOWEST_NODE_VERSION)) {
+    throw new Error(colors.red(`one-stop-cli 需要安装 v${LOWEST_NODE_VERSION} 以上版本的 Node.js`));
   }
+}
 
-  // 参数解析
-  program.parse(process.argv);
-
+function checkPkgVersion() {
+  log.notice('cli', packageConfig.version);
+  log.success(locale.welcome);
 }

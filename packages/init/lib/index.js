@@ -1,292 +1,334 @@
 'use strict';
 
 const fs = require('fs');
-const path = require('path');
-const {Command, Package, log, spinnerStart, sleep} = require('@one-stop-cli/utils');
-const inquirer = require('inquirer');
 const fse = require('fs-extra');
-const semver = require('semver');
-const userHome = require('user-home');
+const { log, inquirer, spinner, Package, sleep, exec, formatName, formatClassName, ejs } = require('@one-stop-cli/utils');
 const getProjectTemplate = require('./getProjectTemplate');
 
+const COMPONENT_FILE = '.component';
 const TYPE_PROJECT = 'project';
 const TYPE_COMPONENT = 'component';
-const DEFAULT_CLI_HOME = '.one-stop-cli';
-const CACHE_DIR = 'template';
-const NORMAL_TEMPLATE = 'normal';
-const CUSTOM_TEMPLATE = 'custom';
+const TEMPLATE_TYPE_NORMAL = 'normal';
+const TEMPLATE_TYPE_CUSTOM = 'custom';
 
-class InitCommand extends Command {
-  initialize() {
-    this.projectName = this._argv[0] || '';
-    this.force = !!this._cmd.force;
-    log.verbose('project name', this.projectName);
-    log.verbose('force', this.force);
-  }
+const DEFAULT_TYPE = TYPE_PROJECT;
 
-  async execute() {
-    try {
-      // 1. 准备阶段
-      const projectInfo = await this.prepare();
-      if (projectInfo) {
-        // 2. 下载模板
-        log.verbose('project info:', projectInfo);
-        this.projectInfo = projectInfo;
-        await this.downloadTemplate();
-        // 3. 安装模板
-        await this.installTemplate();
-      }
-    } catch (e) {
-      log.error(e.message);
+async function init(options) {
+  try {
+    // 设置 targetPath
+    let targetPath = process.cwd();
+    if (!options.targetPath) {
+      options.targetPath = targetPath;
     }
-  }
-
-  // 下载模板
-  async downloadTemplate() {
-    // console.log(this.projectInfo, this.template);
-    // 1. 通过项目模板API获取项目模板信息
-    // 1.1 通过egg.j搭建一套后端系统
-    // 1.2 通过npm存储项目模板 (vue-cli/h5)
-    // 1.3 将项目模板信息纯粹到mongodb数据库中
-    // 1.4 通过egg.js将获取mongodb中的数据并且通过API返回
-    const { template } = this.projectInfo;
-    const templateInfo = this.template.find(item => item.npmName === template);
-    this.templateInfo = templateInfo;
-    const { npmName, version } = templateInfo;
-    const targetPath = path.resolve(userHome, DEFAULT_CLI_HOME, CACHE_DIR);
-    const storeDir = path.resolve(userHome, DEFAULT_CLI_HOME, CACHE_DIR, 'node_modules');
-    log.verbose(npmName, version, targetPath, storeDir);
-    const templateNpm = new Package({
-      targetPath,
-      storeDir,
-      packageName: npmName,
-      packageVersion: version
-    });
-    this.templateNpm = templateNpm;
-    if (await templateNpm.exists()) {
-      // 更新package
-      const spinner = spinnerStart('Updating template...');
-      await sleep();
-      try {
-        await templateNpm.update();
-      } catch (e) {
-        throw e;
-      } finally {
-        spinner.stop(true);
-        if (await templateNpm.exists()) {
-          log.success('Updated succeeded.');
-        }
-      }
+    log.verbose('init', options);
+    // 完成项目初始化的准备和校验工作
+    const result = await prepare(options);
+    if (!result) {
+      log.info('创建项目终止');
+      return;
+    }
+    // 获取项目模板列表
+    const { templateList, project } = result;
+    // 缓存项目模板文件
+    const template = await downloadTemplate(templateList, options);
+    log.verbose('template', template);
+    if (template.type === TEMPLATE_TYPE_NORMAL) {
+      // 安装项目模板
+      await installTemplate(template, project, options);
+    } else if (template.type === TEMPLATE_TYPE_CUSTOM) {
+      await installCustomTemplate(template, project, options);
     } else {
-      // 安装package
-      const spinner = spinnerStart('Downloading template...');
-      await sleep();
-      try {
-        await templateNpm.install();
-      } catch (e) {
-        throw e;
-      } finally {
-        spinner.stop(true);
-        if (await templateNpm.exists()) {
-          log.success('Installation succeeded.');
-        }
-      }
+      throw new Error('未知的模板类型！');
     }
+  } catch (e) {
+    if (options.debug) {
+      log.error('Error:', e.stack);
+    } else {
+      log.error('Error:', e.message);
+    }
+  } finally {
+    process.exit(0);
   }
+}
 
+async function installCustomTemplate(template, ejsData, options) {
+  const pkgPath = path.resolve(template.sourcePath, 'package.json');
+  const pkg = fse.readJsonSync(pkgPath);
+  const rootFile = path.resolve(template.sourcePath, pkg.main);
+  if (!fs.existsSync(rootFile)) {
+    throw new Error('入口文件不存在！');
+  }
+  log.notice('开始执行自定义模板');
+  const targetPath = options.targetPath;
+  await execCustomTemplate(rootFile, {
+    targetPath,
+    data: ejsData,
+    template,
+  });
+  log.success('自定义模板执行成功');
+}
+
+function execCustomTemplate(rootFile, options) {
+  const code = `require('${rootFile}')(${JSON.stringify(options)})`;
+  return new Promise((resolve, reject) => {
+    const p = exec('node', ['-e', code], { 'stdio': 'inherit' });
+    p.on('error', e => {
+      reject(e);
+    });
+    p.on('exit', c => {
+      resolve(c);
+    });
+  });
+}
+
+async function npminstall(targetPath) {
+  return new Promise((resolve, reject) => {
+    const p = exec('npm', ['install', '--registry=https://registry.npm.taobao.org'], { stdio: 'inherit', cwd: targetPath });
+    p.on('error', e => {
+      reject(e);
+    });
+    p.on('exit', c => {
+      resolve(c);
+    });
+  });
+}
+
+async function execStartCommand(targetPath, startCommand) {
+  return new Promise((resolve, reject) => {
+    const p = exec(startCommand[0], startCommand.slice(1), { stdio: 'inherit', cwd: targetPath });
+    p.on('error', e => {
+      reject(e);
+    });
+    p.on('exit', c => {
+      resolve(c);
+    });
+  });
+}
+
+// 如果是组件项目，则创建组件相关文件
+async function createComponentFile(template, data, dir) {
+  if (template.tag.includes(TYPE_COMPONENT)) {
+    const componentData = {
+      ...data,
+      buildPath: template.buildPath,
+      examplePath: template.examplePath,
+      npmName: template.npmName,
+      npmVersion: template.version,
+    }
+    const componentFile = path.resolve(dir, COMPONENT_FILE);
+    fs.writeFileSync(componentFile, JSON.stringify(componentData));
+  }
+}
+
+async function installTemplate(template, ejsData, options) {
   // 安装模板
-  async installTemplate() {
-    if (this.templateInfo) {
-      if (!this.templateInfo.type) {
-        this.templateInfo.type = NORMAL_TEMPLATE;
-      }
-      if (this.templateInfo.type === NORMAL_TEMPLATE) {
-        await this.installNormalTemplate();
-      } else if (this.templateInfo.type === CUSTOM_TEMPLATE) {
-        await this.installCustomTemplate();
-      } else {
-        throw new Error('Unrecognized project template.');
-      }
-    } else {
-      throw new Error('Project template does not exist.');
-    }
+  let spinnerStart = spinner(`正在安装模板...`);
+  await sleep(1000);
+  const sourceDir = template.path;
+  const targetDir = options.targetPath;
+  fse.ensureDirSync(sourceDir);
+  fse.ensureDirSync(targetDir);
+  fse.copySync(sourceDir, targetDir);
+  spinnerStart.stop(true);
+  log.success('模板安装成功');
+  // ejs 模板渲染
+  const ejsIgnoreFiles = [
+    '**/node_modules/**',
+    '**/.git/**',
+    '**/.vscode/**',
+    '**/.DS_Store',
+  ];
+  if (template.ignore) {
+    ejsIgnoreFiles.push(...template.ignore);
   }
-
-  // 安装标准模板
-  async installNormalTemplate() {
-    const spinner = spinnerStart('Install template...');
-    try {
-      const templatePath = path.resolve(this.templateNpm.cacheFilePath, 'template');
-      const targetPath = process.cwd();
-      console.log(templatePath, targetPath);
-      fse.ensureDirSync(templatePath);
-      fse.ensureDirSync(targetPath);
-      fse.copySync(templatePath, targetPath);
-    } catch (e) {
-      throw e;
-    } finally {
-      spinner.stop(true);
-      log.success('Template install success.');
-    }
+  log.verbose('ejsData', ejsData);
+  await ejs(targetDir, ejsData, {
+    ignore: ejsIgnoreFiles,
+  });
+  // 如果是组件，则进行特殊处理
+  await createComponentFile(template, ejsData, targetDir);
+  // 安装依赖文件
+  log.notice('开始安装依赖');
+  await npminstall(targetDir);
+  log.success('依赖安装成功');
+  // 启动代码
+  if (template.startCommand) {
+    log.notice('开始执行启动命令');
+    const startCommand = template.startCommand.split(' ');
+    await execStartCommand(targetDir, startCommand);
   }
+}
 
-  // 安装自定义模板
-  async installCustomTemplate() {}
-
-  async prepare() {
-    // 0. 判断项目模板是否存在
-    const template = await getProjectTemplate();
-    if (!template || template.length === 0) {
-      throw new Error('Project template does not exist.');
-    }
-    this.template = template;
-    // 1. 判断当前目录是否为空
-    const localPath = process.cwd();
-    if (!this.isDirEmpty(localPath)) {
-      let isContinue = false;
-      if (!this.force) {
-        // 1.1 询问是否继续创建
-        isContinue = (await inquirer
-          .prompt([
-            {
-              type: 'confirm',
-              name: 'isContinue',
-              message: `Target directory ${localPath} already used. Do you need to continue:`,
-              default: false
-            }
-          ])).isContinue;
-        if (!isContinue) {
-          return;
-        }
-      }
-      // 2. 是否强制更新
-      if (isContinue || this.force) {
-        const { confirmDelete } = await inquirer
-          .prompt([
-            {
-              type: 'confirm',
-              name: 'confirmDelete',
-              message: `Are you sure to clear the current directory: ${localPath} :`,
-              default: false
-            }
-          ]);
-        if (confirmDelete) {
-          // 强制清空
-          fse.emptyDirSync(localPath);
-        }
-      }
-    }
-    return this.getProjectInfo();
+async function downloadTemplate(templateList, options) {
+  // 用户交互选择
+  const templateName = await inquirer({
+    choices: createTemplateChoice(templateList),
+    message: '请选择项目模板',
+  });
+  log.verbose('template', templateName);
+  const selectedTemplate = templateList.find(item => item.npmName === templateName);
+  log.verbose('selected template', selectedTemplate);
+  const { cliHome } = options;
+  const targetPath = path.resolve(cliHome, 'template');
+  // 基于模板生成 Package 对象
+  const templatePkg = new Package({
+    targetPath,
+    storePath: targetPath,
+    name: selectedTemplate.npmName,
+    version: selectedTemplate.version,
+  });
+  // 如果模板不存在则进行下载
+  if (!await templatePkg.exists()) {
+    let spinnerStart = spinner(`正在下载模板...`);
+    await sleep(1000);
+    await templatePkg.install();
+    spinnerStart.stop(true);
+    log.success('下载模板成功');
+  } else {
+    log.notice('模板已存在', `${selectedTemplate.npmName}@${selectedTemplate.version}`);
+    log.notice('模板路径', `${targetPath}`);
+    let spinnerStart = spinner(`开始更新模板...`);
+    await sleep(1000);
+    await templatePkg.update();
+    spinnerStart.stop(true);
+    log.success('更新模板成功');
   }
+  // 生成模板路径
+  const templateSourcePath = templatePkg.npmFilePath;
+  const templatePath = path.resolve(templateSourcePath, 'template');
+  log.verbose('template path', templatePath);
+  if (!fs.existsSync(templatePath)) {
+    throw new Error(`[${templateName}]项目模板不存在！`);
+  }
+  const template = {
+    ...selectedTemplate,
+    path: templatePath,
+    sourcePath: templateSourcePath,
+  };
+  return template;
+}
 
-  // 获取项目信息
-  async getProjectInfo() {
-    let projectInfo = {};
-    // 3. 选择创建项目还是组件
-    const { type } = await inquirer.prompt({
-      type: 'list',
-      name: 'type',
-      message: 'Please select a initialize type:',
-      default: TYPE_PROJECT,
-      choices: [
-        {
-          name: 'project',
-          value: TYPE_PROJECT
-        },
-        {
-          name: 'component',
-          value: TYPE_COMPONENT
-        }
-      ]
+async function prepare(options) {
+  let fileList = fs.readdirSync(process.cwd());
+  fileList = fileList.filter(file => ['node_modules', '.git', '.DS_Store'].indexOf(file) < 0);
+  log.verbose('fileList', fileList);
+  let continueWhenDirNotEmpty = true;
+  if (fileList && fileList.length > 0) {
+    continueWhenDirNotEmpty = await inquirer({
+      type: 'confirm',
+      message: '当前文件夹不为空，是否继续创建项目？',
+      defaultValue: false,
     });
-    log.verbose(`initialize type: ${type}`);
-    // 4. 获取项目的基本信息
-    if (type === TYPE_PROJECT) {
-      const project = await inquirer.prompt([
-        {
-          type: 'input',
-          name: 'name',
-          message: 'Please enter project name:',
-          validate(v) {
-            // 首字符必须为英文字符
-            // 尾字符必须为英文或者数字，不能为字符
-            // 字符仅允许'-_'
-            const done = this.async();
-            setTimeout(() => {
-              if (!/^[a-zA-Z]+([-][a-zA-Z][a-zA-Z0-9]*|[_][a-zA-Z][a-zA-Z0-9]*|[a-zA-Z0-9])*$/) {
-                done('You need to provide a legal project name.');
-                return;
-              }
-              done(null, true);
-            }, 0);
-          },
-          filter(v) {
-            return v;
-          }
-        },
-        {
-          type: 'input',
-          name: 'versions:',
-          message: 'Please enter project version:',
-          default: '1.0.0',
-          validate(v) {
-            const done = this.async();
-            setTimeout(() => {
-              if (!!!semver.valid(v)) {
-                done('You need to provide a legal versions.');
-                return;
-              }
-              done(null, true);
-            }, 0);
-          },
-          filter(v) {
-            if (!!semver.valid(v)) {
-              return semver.valid(v);
-            }
-            return v;
-          }
-        },
-        {
-          type: 'list',
-          name: 'template',
-          message: 'Please select a project template:',
-          choices: this.createTemplateChoice()
-        }
-      ]);
-      projectInfo = {
-        type,
-        ...project
-      }
-    } else if (type === TYPE_COMPONENT) {
-
+  }
+  if (!continueWhenDirNotEmpty) {
+    return;
+  }
+  if (options.force) {
+    const targetDir = options.targetPath;
+    const confirmEmptyDir = await inquirer({
+      type: 'confirm',
+      message: '是否确认清空当下目录下的文件',
+      defaultValue: false,
+    });
+    if (confirmEmptyDir) {
+      fse.emptyDirSync(targetDir);
     }
-    // return 项目的基本信息 （object）
-    return projectInfo;
   }
-
-  // 项目模板选项拼接
-  createTemplateChoice() {
-    return this.template.map(item => ({
-      name: item.name,
-      value: item.npmName
-    }));
+  let initType = await getInitType();
+  log.verbose('initType', initType);
+  let templateList = await getProjectTemplate();
+  if (!templateList || templateList.length === 0) {
+    throw new Error('项目模板列表获取失败');
   }
-
-  // 判断当前目录是否为空
-  isDirEmpty(localPath) {
-    let fileList = fs.readdirSync(localPath);
-    // 文件过滤
-    fileList = fileList.filter(file => (
-      !file.startsWith('.') && !['node_modules'].includes(file)
-    ));
-    return !fileList || fileList.length <= 0;
+  let projectName = '';
+  let className = '';
+  while (!projectName) {
+    projectName = await getProjectName(initType);
+    if (projectName) {
+      projectName = formatName(projectName);
+      className = formatClassName(projectName);
+    }
+    log.verbose('name', projectName);
+    log.verbose('className', className);
   }
-
+  let version = '1.0.0';
+  do {
+    version = await getProjectVersion(version, initType);
+    log.verbose('version', version);
+  } while (!version);
+  if (initType === TYPE_PROJECT) {
+    templateList = templateList.filter(item => item.tag.includes('project'));
+    return {
+      templateList,
+      project: {
+        name: projectName,
+        className,
+        version,
+      },
+    };
+  } else {
+    templateList = templateList.filter(item => item.tag.includes('component'));
+    let description = '';
+    while (!description) {
+      description = await getComponentDescription();
+      log.verbose('description', description);
+    }
+    return {
+      templateList,
+      project: {
+        name: projectName,
+        className,
+        version,
+        description,
+      },
+    };
+  }
 }
 
-function factory(argv) {
-  new InitCommand(argv);
+function getComponentDescription() {
+  return inquirer({
+    type: 'string',
+    message: '请输入组件的描述信息',
+    defaultValue: '',
+  });
 }
 
-module.exports = factory;
-module.exports.InitCommand = InitCommand;
+function getProjectVersion(defaultVersion, initType) {
+  return inquirer({
+    type: 'string',
+    message: initType === TYPE_PROJECT ? '请输入项目版本号' : '请输入组件版本号',
+    defaultValue: defaultVersion,
+  });
+}
+
+function getInitType() {
+  return inquirer({
+    type: 'list',
+    choices: [{
+      name: '项目',
+      value: TYPE_PROJECT,
+    }, {
+      name: '组件',
+      value: TYPE_COMPONENT,
+    }],
+    message: '请选择初始化类型',
+    defaultValue: DEFAULT_TYPE,
+  });
+}
+
+function getProjectName(initType) {
+  return inquirer({
+    type: 'string',
+    message: initType === TYPE_PROJECT ? '请输入项目名称' : '请输入组件名称',
+    defaultValue: '',
+  });
+}
+
+function createTemplateChoice(list) {
+  return list.map(item => ({
+    value: item.npmName,
+    name: item.name,
+  }));
+}
+
+module.exports = init;

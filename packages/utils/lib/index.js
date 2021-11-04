@@ -9,6 +9,7 @@ const spinner = require('./spinner');
 const ejs = require('./ejs');
 const terminalLink = require('./terminalLink');
 
+const Command = require('./Command');
 const Package = require('./Package');
 const Git = require('./Git/Git');
 const file = require('./file');
@@ -69,13 +70,28 @@ function formatClassName(name) {
   return require('kebab-case')(name).replace(/^-/, '');
 }
 
+function isObject(o) {
+  return Object.prototype.toString.call(o) === '[object Object]';
+}
+
+function spinnerStart(msg = 'loading..', spinnerString = '|/-\\') {
+  const Spinner = require('cli-spinner').Spinner;
+  const  spinner = new Spinner(msg + ' %s');
+  spinner.setSpinnerString(spinnerString);
+  spinner.start();
+  return spinner;
+}
+
 module.exports = {
+  isObject,
+  spinnerStart,
   log,
   request,
   npm,
   inquirer,
   spinner,
   ejs,
+  Command,
   Package,
   Git,
   sleep,
