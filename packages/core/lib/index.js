@@ -121,7 +121,6 @@ async function checkGlobalUpdate() {
 * 注册命令
 * */
 function registryCommand() {
-
   program
     .name(Object.keys(pkg.bin)[0])
     .usage('<command> [options]')

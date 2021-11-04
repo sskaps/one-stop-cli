@@ -17,8 +17,8 @@
     "lib"
   ],
   "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npm.taobao.org/"
+    "registry": "https://registry.npm.taobao.org/",
+    "access": "public"
   },
   "scripts": {
     "test": "echo \"Error: run tests from root\" && exit 1"
