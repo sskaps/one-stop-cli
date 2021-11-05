@@ -24,12 +24,14 @@
     "test": "echo \"Error: run tests from root\" && exit 1"
   },
   "dependencies": {
+    "@one-stop-cli/create": "file:../create",
     "@one-stop-cli/init": "file:../init",
     "@one-stop-cli/utils": "file:../utils",
     "colors": "^1.4.0",
     "commander": "^6.0.0",
     "dotenv": "^10.0.0",
     "import-local": "^3.0.2",
+    "moment": "^2.29.1",
     "npmlog": "^5.0.1",
     "path-exists": "^4.0.0",
     "root-check": "^1.0.0",

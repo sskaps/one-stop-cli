@@ -19,5 +19,9 @@
   },
   "scripts": {
     "test": "echo \"Error: run tests from root\" && exit 1"
+  },
+  "dependencies": {
+    "@one-stop-cli/utils": "file:../utils",
+    "moment": "^2.29.1"
   }
 }

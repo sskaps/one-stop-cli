@@ -30,6 +30,7 @@
     "inquirer": "^7.3.3",
     "kebab-case": "^1.0.0",
     "lodash": "^4.17.20",
+    "moment": "^2.29.1",
     "npminstall": "^4.9.1",
     "npmlog": "^4.1.2",
     "semver": "^7.3.2",

@@ -6,6 +6,7 @@ const colors = require('colors/safe');
 const userHome = require('user-home');
 const semver = require('semver');
 const { log, npm, Package, exec, locale } = require('@one-stop-cli/utils');
+const create = require('@one-stop-cli/create');
 const packageConfig = require('../package');
 
 const {
@@ -41,6 +42,22 @@ function registerCommand() {
       const packageName = '@one-stop-cli/init';
       const packageVersion = '0.0.1';
       await execCommand({ packagePath, packageName, packageVersion }, { type, force });
+    });
+
+  program
+    .command('create [name]')
+    .description('生成组件')
+    .option('-t, --componentType', '组件类型')
+    .option('-p, --rootPath', '组件入口路径')
+    .option('-vp, --viewsPath', '组件视图所属父级目录')
+    .option('-sp, --servicesPath', '组件API服务接口所在父级目录')
+    .option('-rp, --srouterPath', '组件路由定义所在父级目录')
+    .option('-dp, --dataPath', '组件数据定义所在父级目录')
+    .action(async (name, componentType, rootPath) => {
+      log.notice('开始创建组件');
+      const type = componentType || 'views';
+      const basePath = rootPath || path.resolve(process.cwd(), './src');
+      await create({ dirName: name, type, basePath });
     });
 
   program
