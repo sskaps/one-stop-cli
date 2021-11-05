@@ -236,7 +236,29 @@ async function prepare(options) {
   }
   let initType = await getInitType();
   log.verbose('initType', initType);
-  let templateList = await getProjectTemplate();
+  // let templateList = await getProjectTemplate();
+  let templateList = [
+    {
+      name: 'vue2 template for web',
+      npmName: 'zjy-cli-template-vue2-web',
+      version: '1.0.4',
+      buildPath: 'dist',
+      ignore: [ '**/public/**', '**.png' ],
+      startCommand: 'npm run serve',
+      tag: [ 'project' ],
+      type: 'normal'
+    },
+    {
+      name: 'vue2 template for h5',
+      napmName: 'zjy-cli-vue2-h5',
+      version: '1.0.0',
+      buildPath: 'dist',
+      ignore: [ '**/public/**', '**.png' ],
+      startCommand: 'npm run serve',
+      tag: [ 'project' ],
+      type: 'normal'
+    }
+  ];
   if (!templateList || templateList.length === 0) {
     throw new Error('项目模板列表获取失败');
   }
